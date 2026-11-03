@@ -135,7 +135,7 @@ async def announce_duel_result(match: Match):
             random_id=0,
         )
 
-@bot.on.message(text="/start")
+@bot.on.message(text="Начало")
 async def start(message: Message):
     await message.answer("Выбери режим", keyboard=menu_keyboard().get_json())
 
