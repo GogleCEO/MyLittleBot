@@ -6,6 +6,7 @@ def menu_keyboard() -> Keyboard:
     kb.add(Callback("⚔️ Соревнование", payload={"action": "duel_start"}), color=KeyboardButtonColor.NEGATIVE)
     kb.row()
     kb.add(Callback("Мой рейтинг", payload={"action": "mmr"}), color=KeyboardButtonColor.POSITIVE)
+    kb.add(Callback("Топ игроков", payload={"action": "leaderboard"}), color=KeyboardButtonColor.POSITIVE)
     return kb
 
 def train_keyboard() -> Keyboard:
