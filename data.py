@@ -4,7 +4,6 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent / "bot.db"
 
 def init_db():
-    """Создаёт таблицу рейтинга, если её нет."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ratings (
@@ -15,7 +14,6 @@ def init_db():
         conn.commit()
 
 def get_rating(user_id: int) -> int:
-    """Возвращает рейтинг пользователя (0, если его нет в БД)."""
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             "SELECT rating FROM ratings WHERE user_id = ?", (user_id,)
@@ -24,7 +22,6 @@ def get_rating(user_id: int) -> int:
 
 
 def update_rating(user_id: int, delta: int) -> int:
-    """Прибавляет delta к рейтингу и возвращает новое значение."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             INSERT INTO ratings (user_id, rating) VALUES (?, ?)
@@ -35,6 +32,27 @@ def update_rating(user_id: int, delta: int) -> int:
             "SELECT rating FROM ratings WHERE user_id = ?", (user_id,)
         ).fetchone()
         return row[0]
+
+async def get_top_players_text(limit: int = 10) -> str:
+    rows = get_top_ratings(limit)
+
+    if not rows:
+        return "🏆 Рейтинг пока пуст — сыграйте первый матч!"
+
+    user_ids = [uid for uid, _ in rows]
+    users = await bot.api.users.get(
+        user_ids=user_ids,
+        fields=["first_name", "last_name"]
+    )
+
+    names = {u.id: f"{u.first_name} {u.last_name}".strip() for u in users}
+
+    lines = ["🏆 Топ-10 игроков:\n"]
+    for i, (uid, rating) in enumerate(rows, start=1):
+        name = names.get(uid, f"Игрок {uid}")
+        lines.append(f"{i}. {name} — {rating}")
+
+    return "\n".join(lines)
 
 def get_top_ratings(limit: int = 10) -> list[tuple[int, int]]:
     with sqlite3.connect(DB_PATH) as conn:
