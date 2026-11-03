@@ -137,7 +137,9 @@ async def handle_callback(event: MessageEvent):
         await event.show_snackbar(f"Твой рейтинг: {rating}")
         return
     if action == "leaderboard":
-        pass
+        text = await get_top_players_text()
+        await event.send_message(text)
+        return
 
     # 1. Старт: выбор эпохи → первый вопрос
     if action == "start":
