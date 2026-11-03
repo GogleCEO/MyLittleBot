@@ -35,3 +35,8 @@ def update_rating(user_id: int, delta: int) -> int:
             "SELECT rating FROM ratings WHERE user_id = ?", (user_id,)
         ).fetchone()
         return row[0]
+
+def get_top_ratings(limit: int = 10) -> list[tuple[int, int]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT user_id, rating FROM ratings ORDER BY rating DESC LIMIT ?", (limit,)).fetchall()
+        return rows
