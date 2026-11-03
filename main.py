@@ -1,31 +1,51 @@
-import asyncio
-import random
-from vkbottle import Keyboard, KeyboardButtonColor, Text, PhotoMessageUploader, Callback
-from vkbottle.bot import Bot, Message, MessageEvent
-from vkbottle import BaseStateGroup
-from vkbottle import GroupEventType
-from dataclasses import dataclass, field
-from typing import Optional
+import os
 
+from dotenv import load_dotenv
 from answers import *
 from keyboards import *
+from data import *
 
-bot = Bot()
-# Очередь ожидающих: {user_id: peer_id} (в личке они совпадают, но peer_id надёжнее)
+load_dotenv()
+
+bot = Bot(os.getenv("VK_API_TOKEN"))
 waiting_players: dict[int, int] = {}
+uploader = PhotoMessageUploader(bot.api)
 
-# Активные матчи: match_id (например, кортеж из двух user_id) -> данные матча
 @dataclass
 class Match:
-    players: list[int]              # [user_id1, user_id2]
-    questions: list[dict]           # 5 вопросов (каждый — результат pick_question)
-    answers: dict[int, list] = field(default_factory=dict)  # user_id -> список ответов (bool)
-    current_index: dict[int, int] = field(default_factory=dict)  # user_id -> текущий вопрос
+    players: list[int]
+    questions: list[dict]
+    answers: dict[int, list] = field(default_factory=dict)
+    current_index: dict[int, int] = field(default_factory=dict)
 
 active_matches: dict[tuple, Match] = {}
 
+async def send_op_found(user_id: int, opponent_id: int):
+    users = await bot.api.users.get(
+        user_ids=opponent_id,
+        fields=["photo_200", "first_name", "last_name"]
+    )
+    opponent = users[0]
+    rating = get_rating(opponent_id)
+
+    text = (
+        f"⚔️ Соперник найден!\n\n"
+        f"👤 {opponent.first_name} {opponent.last_name}\n"
+        f"🏆 Рейтинг: {rating}"
+    )
+
+    await bot.api.messages.send(
+        peer_id=user_id,
+        message=text,
+        random_id=0
+    )
+async def get_image(title):
+    image_url = None
+    # 50% шанс попытаться прикрепить картинку
+    if random.random() < 0.5:
+        image_url = get_page_image(title)
+    return image_url
 async def send_duel_question(user_id: int, match: Match):
-    """Отправляет игроку текущий вопрос соревнования."""
     q_idx = match.current_index[user_id]
     question = match.questions[q_idx]
     description = await getWiki(question["correct"])
@@ -39,36 +59,64 @@ async def send_duel_question(user_id: int, match: Match):
         if i == 1:
             kb.row()
 
-    text = f"⚔️ Вопрос {q_idx + 1}/5\n\n{description}\n\nЧто это?"
-    await bot.api.messages.send(peer_id=user_id, message=text, keyboard=kb.get_json(), random_id=0)
-
-
+    image_url = await get_image(question["correct"])
+    if image_url:
+        attachment = await upload_image_from_url(uploader, user_id, image_url)
+        text = f"⚔️ Вопрос {q_idx + 1}/5\n\nЧто изображено на фото?"
+        await bot.api.messages.send(peer_id=user_id, message=text, attachment=attachment, keyboard=kb.get_json(), random_id=0)
+    else:
+        text = f"⚔️ Вопрос {q_idx + 1}/5\n\n{description}"
+        await bot.api.messages.send(peer_id=user_id, message=text, keyboard=kb.get_json(), random_id=0)
 async def announce_duel_result(match: Match):
-    """Считает результаты и отправляет обоим игрокам."""
     p1, p2 = match.players
     score1 = sum(match.answers[p1])
     score2 = sum(match.answers[p2])
 
+
     if score1 > score2:
-        winner = p1
-        result_text = f"🏆 Победитель: Игрок {p1} ({score1}:{score2})"
+        winner, loser = p1, p2
+        users = await bot.api.users.get(
+            user_ids=p1,
+            fields=["photo_200", "first_name", "last_name"]
+        )
+        winnerName = users[0]
+        result_text = f"🏆 Победитель: {winnerName.first_name} {winnerName.last_name} ({score1}:{score2})"
+
     elif score2 > score1:
-        winner = p2
-        result_text = f"🏆 Победитель: Игрок {p2} ({score2}:{score1})"
+        winner, loser = p2, p1
+        users = await bot.api.users.get(
+            user_ids=p2,
+            fields=["photo_200", "first_name", "last_name"]
+        )
+        winnerName = users[0]
+        result_text = f"🏆 Победитель: {winnerName.first_name} {winnerName.last_name} ({score1}:{score2})"
     else:
+        winner = loser = None
         result_text = f"🤝 Ничья! ({score1}:{score2})"
 
+    # Обновляем рейтинг
+    if winner is not None:
+        update_rating(winner, +20)
+        loser_rating = get_rating(loser)
+        if loser_rating < 20:
+            update_rating(loser, -loser_rating)
+
     for uid in match.players:
+        current_rating = get_rating(uid)
         await bot.api.messages.send(
             peer_id=uid,
-            message=f"Соревнование окончено!\n{result_text}\n\nТвой счёт: {match.answers[uid].count(True)}/5",
-            keyboard=era_keyboard().get_json(),
+            message=(
+                f"Соревнование окончено!\n{result_text}\n\n"
+                f"Твой счёт: {match.answers[uid].count(True)}/5\n"
+                f"Твой рейтинг: {current_rating}"
+            ),
+            keyboard=menu_keyboard().get_json(),
             random_id=0,
         )
 
 @bot.on.message(text="/start")
 async def start(message: Message):
-    await message.answer("Выбери время", keyboard=era_keyboard().get_json())
+    await message.answer("Выбери режим", keyboard=menu_keyboard().get_json())
 
 
 @bot.on.raw_event(GroupEventType.MESSAGE_EVENT, dataclass=MessageEvent)
@@ -78,18 +126,34 @@ async def handle_callback(event: MessageEvent):
     user_id = event.user_id
     peer_id = event.peer_id
 
+    if action == "train":
+        await event.send_message("Режим тренировки. Выбери эпоху", keyboard=train_keyboard().get_json())
+        await event.show_snackbar("Выбери эпоху")
+        return
+
+    if action == "mmr":
+        rating = get_rating(user_id)
+        await event.send_message(f"Твой рейтинг: {rating}")
+        await event.show_snackbar(f"Твой рейтинг: {rating}")
+        return
+
     # 1. Старт: выбор эпохи → первый вопрос
     if action == "start":
         era = payload.get("era")
         question = pick_question(era)
-        description = await getWiki(question["correct"])
-        text = f"{description}\n\nЧто это за событие/личность/государство?"
+        text = await getWiki(question["correct"])
         kb = answers_keyboard(question["options"], question["correct"], era)
-        await event.send_message(text, keyboard=kb.get_json())
+        image_url = await get_image(question["correct"])
+        if image_url:
+            attachment = await upload_image_from_url(uploader, event.peer_id, image_url)
+            text = "Что изображено на фото?"
+            await event.send_message(text, keyboard=kb.get_json(), attachment=attachment)
+            print("Изображение отправлено")
+        else:
+            await event.send_message(text, keyboard=kb.get_json())
         await event.show_snackbar("Вопрос загружен")
         return
 
-    # 2. Ответ на вопрос
     if action == "answer":
         chosen = payload.get("answer")
         correct = payload.get("correct")
@@ -105,22 +169,33 @@ async def handle_callback(event: MessageEvent):
         await event.show_snackbar("Ответ принят")
         return
 
-    # 3. Следующий вопрос из той же эпохи
     if action == "next":
         era = payload.get("era")
         question = pick_question(era)
-        description = await getWiki(question["correct"])
-        text = f"{description}\n\nЧто это за событие/личность/государство?"
+        text = await getWiki(question["correct"])
         kb = answers_keyboard(question["options"], question["correct"], era)
-        await event.send_message(text, keyboard=kb.get_json())
+        image_url = await get_image(question["correct"])
+        if image_url:
+            attachment = await upload_image_from_url(uploader, event.peer_id, image_url)
+            text = "Что изображено на фото?"
+            await event.send_message(text, keyboard=kb.get_json(), attachment=attachment)
+        else:
+            await event.send_message(text, keyboard=kb.get_json())
         await event.show_snackbar("Новый вопрос")
         return
 
     # 4. Возврат в меню
     if action == "menu":
-        await event.send_message("Выбери эпоху:", keyboard=era_keyboard().get_json())
-        await event.show_snackbar("В меню")
+        await event.send_message("Меню:", keyboard=menu_keyboard().get_json())
+        await event.show_snackbar("Возвращаю в меню")
         return
+
+    if action == "duel_cancel":
+        del waiting_players[user_id]
+        await event.send_message("Меню:", keyboard=menu_keyboard().get_json())
+        await event.show_snackbar("Вы вышли из очереди")
+        return
+
 
     # === СОРЕВНОВАНИЕ: поиск соперника ===
     if action == "duel_start":
@@ -145,19 +220,18 @@ async def handle_callback(event: MessageEvent):
         if opponent_id is None:
             # Соперника нет — встаём в очередь
             waiting_players[user_id] = peer_id
-            await event.send_message("⏳ Ожидание соперника... Нажми /cancel_duel чтобы отменить.")
+            kb = Keyboard(one_time=True, inline=False)
+            kb.add(Callback("Выйти из очереди", payload={"action": "duel_cancel"}), color=KeyboardButtonColor.POSITIVE)
+            await event.send_message("⏳ Ожидание соперника... Нажми выйти из очереди чтобы отменить.", keyboard=kb.get_json())
             await event.show_snackbar("Ты в очереди")
         else:
             # Нашли соперника — создаём матч
             del waiting_players[opponent_id]
-            opponent_peer = waiting_players.get(opponent_id, opponent_id)  # на всякий случай
-            # На самом деле peer уже удалён, сохраним заранее
-            # (лучше хранить peer_id в очереди как dict[user_id] = peer_id и брать до удаления)
+            waiting_players.get(opponent_id, opponent_id)
+            await send_op_found(user_id, opponent_id)
+            await send_op_found(opponent_id, user_id)
 
             match_key = tuple(sorted([user_id, opponent_id]))
-
-            # Генерируем 5 общих вопросов (из той же эпохи, что выбрал первый?
-            # Для простоты — "all", или можно спросить эпоху перед стартом)
             questions = [pick_question("all") for _ in range(5)]
 
             match = Match(
@@ -175,9 +249,7 @@ async def handle_callback(event: MessageEvent):
             await event.show_snackbar("Соперник найден! Игра началась")
         return
 
-    # === ОТВЕТ В СОРЕВНОВАНИИ ===
     if action == "duel_answer":
-        # Находим матч, в котором участвует игрок
         match = None
         match_key = None
         for mk, m in active_matches.items():
@@ -207,11 +279,8 @@ async def handle_callback(event: MessageEvent):
         match.current_index[user_id] = next_idx
 
         if next_idx >= 5:
-            # Игрок закончил все 5 вопросов
-            # Проверяем, закончил ли второй
             other_id = match.players[0] if match.players[1] == user_id else match.players[1]
             if match.current_index[other_id] >= 5:
-                # Оба закончили — объявляем результат
                 await announce_duel_result(match)
                 del active_matches[match_key]
             else:
@@ -223,4 +292,5 @@ async def handle_callback(event: MessageEvent):
         return
 
 if __name__ == "__main__":
+    init_db()
     asyncio.run(bot.run_polling())  # ✅ Запуск через asyncio.run
