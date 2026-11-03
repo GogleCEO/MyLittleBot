@@ -33,27 +33,6 @@ def update_rating(user_id: int, delta: int) -> int:
         ).fetchone()
         return row[0]
 
-async def get_top_players_text(limit: int = 10) -> str:
-    rows = get_top_ratings(limit)
-
-    if not rows:
-        return "🏆 Рейтинг пока пуст — сыграйте первый матч!"
-
-    user_ids = [uid for uid, _ in rows]
-    users = await bot.api.users.get(
-        user_ids=user_ids,
-        fields=["first_name", "last_name"]
-    )
-
-    names = {u.id: f"{u.first_name} {u.last_name}".strip() for u in users}
-
-    lines = ["🏆 Топ-10 игроков:\n"]
-    for i, (uid, rating) in enumerate(rows, start=1):
-        name = names.get(uid, f"Игрок {uid}")
-        lines.append(f"{i}. {name} — {rating}")
-
-    return "\n".join(lines)
-
 def get_top_ratings(limit: int = 10) -> list[tuple[int, int]]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute("SELECT user_id, rating FROM ratings ORDER BY rating DESC LIMIT ?", (limit,)).fetchall()
